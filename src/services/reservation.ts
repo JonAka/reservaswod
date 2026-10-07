@@ -43,7 +43,12 @@ export async function goToReservations(page: Page): Promise<void> {
 export async function getReservationState(
   reservationButton: ElementHandle<Element>
 ): Promise<ButtonText | null> {
-  const buttonText = await reservationButton.evaluate(el => el.textContent);
+  const buttonText = await reservationButton.evaluate(
+    el => el.textContent?.trim() ?? ''
+  );
+
+  console.log(`🔘 Reservation button text: "${buttonText}"`);
+
   return buttonText as ButtonText | null;
 }
 
