@@ -52,9 +52,39 @@ export function getReservationKey(time: string): string {
 }
 
 export async function goToNextDay(page: Page): Promise<void> {
-  await page.waitForSelector('a.next');
-  await page.click('a.next');
+  const currentUrl = page.url();
+
+  console.log(`➡️ Current reservation URL: ${currentUrl}`);
+
+  const currentTimestamp = new URL(currentUrl).searchParams.get('t');
+
+  const nextButton = await page.$('a.next');
+
+  if (!nextButton) {
+    throw new Error('❌ Next-day button not found');
+  }
+
+  console.log('➡️ Clicking next-day button...');
+
+  await nextButton.click();
+
   await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
+
+  const newUrl = page.url();
+
+  console.log(`➡️ New reservation URL: ${newUrl}`);
+
+  const newTimestamp = new URL(newUrl).searchParams.get('t');
+
+  console.log(
+    `➡️ Timestamp changed: ${currentTimestamp} → ${newTimestamp}`
+  );
+
+  if (!newTimestamp || newTimestamp === currentTimestamp) {
+    throw new Error(
+      `❌ WodBuster did not advance to the next day. URL: ${newUrl}`
+    );
+  }
 }
 
 export async function getWeekDayFromUrl(page: Page): Promise<string> {
