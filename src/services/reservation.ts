@@ -165,86 +165,60 @@ async function findReservationButton(
   console.log(`🔎 Looking for reservation key: ${reservationKey}`);
   console.log(`🔎 Looking for class: ${className ?? 'any'}`);
 
-  /*
-   * Primero buscamos los botones dentro del bloque horario
-   * esperado por el proyecto original.
-   */
+  // Buscar todos los botones "Reservar"
   const buttons = await page.$$(
-    `div[data-magellan-destination="${reservationKey}"] button`
+    'button'
   );
 
-  console.log(
-    `🔎 Buttons found with key ${reservationKey}: ${buttons.length}`
-  );
+  console.log(`🔎 Total buttons on page: ${buttons.length}`);
 
-  /*
-   * Si no encontramos nada con la estructura original,
-   * mostramos información de los botones existentes para
-   * poder adaptar el scraper a WodBuster si fuera necesario.
-   */
-  if (buttons.length === 0) {
-    console.log('⚠️ No buttons found with the expected reservation key.');
+  for (let i = 0; i < buttons.length; i++) {
+    const button = buttons[i];
 
-    const allButtons = await page.$$('button');
-
-    console.log(`🔎 Total buttons on page: ${allButtons.length}`);
-
-    for (const button of allButtons) {
-      const text = await button.evaluate(
-        el => el.textContent?.trim() ?? ''
-      );
-
-      if (text) {
-        console.log(`🔘 BUTTON: "${text}"`);
-      }
-    }
-
-    return null;
-  }
-
-  /*
-   * Si no se ha indicado una clase concreta, usamos el primer
-   * botón disponible.
-   */
-  if (!className) {
-    return buttons[0];
-  }
-
-  /*
-   * Si hay una clase concreta (por ejemplo WOD), buscamos
-   * específicamente esa clase.
-   */
-  for (const button of buttons) {
-    const sectionText = await button.evaluate(el => {
-      const section = el.closest('[data-magellan-destination]');
-      return section?.textContent ?? '';
-    });
-
-    console.log(
-      `🔎 Checking class section: "${sectionText.trim()}"`
+    const buttonText = await button.evaluate(
+      el => el.textContent?.trim() ?? ''
     );
 
-    if (
-      sectionText
-        .toLowerCase()
-        .includes(className.toLowerCase())
-    ) {
-      console.log(
-        `✅ Found class "${className}" at ${reservationKey}`
-      );
+    if (buttonText !== 'Reservar') {
+      continue;
+    }
 
-      return button;
+    // Obtener el contenedor padre relevante de la clase
+    const info = await button.evaluate(el => {
+      let current: HTMLElement | null = el.parentElement;
+
+      for (let level = 0; level < 6 && current; level++) {
+        const text = current.innerText?.trim() ?? '';
+
+        if (text.length > 0) {
+          return {
+            tag: current.tagName,
+            className: current.className,
+            text,
+            html: current.outerHTML.substring(0, 2000),
+          };
+        }
+
+        current = current.parentElement;
+      }
+
+      return null;
+    });
+
+    console.log(`\n🔘 RESERVAR #${i}`);
+
+    if (info) {
+      console.log(`📄 Container: ${info.tag}`);
+      console.log(`📄 Classes: ${info.className}`);
+      console.log(`📄 Text: ${info.text}`);
+      console.log(`📄 HTML: ${info.html}`);
     }
   }
 
   console.log(
-    `⚠️ Class "${className}" not found at ${reservationKey}`
+    '🔎 No exact reservation selected yet — printing reservation structure.'
   );
 
-  /*
-   * MUY IMPORTANTE:
-   * No reservamos otra clase por accidente.
-   */
   return null;
 }
 
