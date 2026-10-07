@@ -22,10 +22,22 @@ export async function goToReservations(page: Page): Promise<void> {
   today.setUTCHours(0, 0, 0, 0);
   const todayInSeconds = Math.floor(today.getTime() / 1000);
 
-  const currentUrl = page.url();
-  const currentDomain = new URL(currentUrl).origin;
+  const reservationsUrl =
+    `https://tubox.wodbuster.com/athlete/reservas.aspx?t=${todayInSeconds}`;
 
-  await page.goto(`${currentDomain}/athlete/reservas.aspx?t=${todayInSeconds}`);
+  console.log(`🏋️ Going to reservations: ${reservationsUrl}`);
+
+  await page.goto(reservationsUrl, {
+    waitUntil: 'networkidle2',
+  });
+
+  console.log(`🌐 Current URL after navigation: ${page.url()}`);
+
+  if (page.url().includes('aspxerrorpath')) {
+    throw new Error(
+      `WodBuster redirected to an error page instead of reservations. Current URL: ${page.url()}`
+    );
+  }
 }
 
 export async function getReservationState(
