@@ -105,27 +105,52 @@ async function findReservationButton(
   reservationKey: string,
   className: string | null
 ): Promise<ElementHandle<Element> | null> {
+  console.log(`🔎 Looking for reservation key: ${reservationKey}`);
+  console.log(`🔎 Looking for class: ${className ?? 'any'}`);
+
+  const allButtons = await page.$$('button');
+
+  console.log(`🔎 Total buttons on page: ${allButtons.length}`);
+
+  for (const button of allButtons) {
+    const text = await button.evaluate(el => el.textContent?.trim() ?? '');
+
+    if (text) {
+      const html = await button.evaluate(el => el.outerHTML);
+
+      console.log(`🔘 BUTTON: "${text}"`);
+      console.log(`   ${html}`);
+    }
+  }
+
   const buttons = await page.$$(
     `div[data-magellan-destination="${reservationKey}"] button`
   );
 
+  console.log(
+    `🔎 Buttons found with key ${reservationKey}: ${buttons.length}`
+  );
+
   if (buttons.length === 0) return null;
-  if (!className || buttons.length === 1) return buttons[0];
+
+  if (!className || buttons.length === 1) {
+    return buttons[0];
+  }
 
   for (const button of buttons) {
     const sectionText = await button.evaluate(el => {
       const section = el.closest('[data-magellan-destination]');
       return section?.textContent ?? '';
     });
+
     if (sectionText.toLowerCase().includes(className.toLowerCase())) {
       return button;
     }
   }
 
-  console.log(
-    `⚠️ Class "${className}" not found at this time slot — using first available`
-  );
-  return buttons[0];
+  console.log(`⚠️ Class "${className}" not found at this time slot`);
+
+  return null;
 }
 
 export async function makeReservation(
