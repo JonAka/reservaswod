@@ -65,8 +65,27 @@ export async function getDateFromUrl(page: Page): Promise<string> {
 }
 
 export function getISODateFromUrl(page: Page): string {
-  const seconds = page.url().split('=')[1];
-  return new Date(Number(seconds) * 1000).toISOString().split('T')[0];
+  const url = new URL(page.url());
+  const timestamp = url.searchParams.get('t');
+
+  console.log(`🔎 Reservation URL: ${page.url()}`);
+  console.log(`🔎 Timestamp parameter: ${timestamp}`);
+
+  if (!timestamp || !/^\d+$/.test(timestamp)) {
+    throw new Error(
+      `Invalid WodBuster date parameter. URL: ${page.url()}`
+    );
+  }
+
+  const date = new Date(Number(timestamp) * 1000);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(
+      `Invalid timestamp received from WodBuster: ${timestamp}`
+    );
+  }
+
+  return date.toISOString().split('T')[0];
 }
 
 async function findReservationButton(
