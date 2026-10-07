@@ -52,39 +52,32 @@ export function getReservationKey(time: string): string {
 }
 
 export async function goToNextDay(page: Page): Promise<void> {
-  const currentUrl = page.url();
+  const currentUrl = new URL(page.url());
+  const currentTimestamp = currentUrl.searchParams.get('t');
 
-  console.log(`➡️ Current reservation URL: ${currentUrl}`);
-
-  const currentTimestamp = new URL(currentUrl).searchParams.get('t');
-
-  const nextButton = await page.$('a.next');
-
-  if (!nextButton) {
-    throw new Error('❌ Next-day button not found');
-  }
-
-  console.log('➡️ Clicking next-day button...');
-
-  await nextButton.click();
-
-  await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
-
-  const newUrl = page.url();
-
-  console.log(`➡️ New reservation URL: ${newUrl}`);
-
-  const newTimestamp = new URL(newUrl).searchParams.get('t');
-
-  console.log(
-    `➡️ Timestamp changed: ${currentTimestamp} → ${newTimestamp}`
-  );
-
-  if (!newTimestamp || newTimestamp === currentTimestamp) {
+  if (!currentTimestamp || !/^\d+$/.test(currentTimestamp)) {
     throw new Error(
-      `❌ WodBuster did not advance to the next day. URL: ${newUrl}`
+      `❌ Invalid current reservation timestamp: ${currentTimestamp}`
     );
   }
+
+  const currentDate = new Date(Number(currentTimestamp) * 1000);
+
+  // Move exactly one calendar day forward
+  currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+
+  const nextTimestamp = Math.floor(currentDate.getTime() / 1000);
+
+  const nextUrl =
+    `https://tubox.wodbuster.com/athlete/reservas.aspx?t=${nextTimestamp}`;
+
+  console.log(`➡️ Moving to next day: ${nextUrl}`);
+
+  await page.goto(nextUrl, {
+    waitUntil: 'networkidle2',
+  });
+
+  console.log(`➡️ New reservation URL: ${page.url()}`);
 }
 
 export async function getWeekDayFromUrl(page: Page): Promise<string> {
