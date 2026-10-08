@@ -3,15 +3,10 @@ run-name: "🏋️ AutoWOD – ${{ github.event_name == 'workflow_dispatch' && '
 
 on:
   schedule:
-    # GitHub's scheduler is a best-effort queue: over September 2026 these runs
-    # started 113-177 minutes after their cron time, and the lag keeps growing.
-    # So we fire hours early and the job sleeps until the exact booking time
-    # (BOOKING_TIME, Europe/Madrid — DST included). The margins below are 5h
-    # and 3h in summer, 6h and 4h in winter. Two crons because GitHub also
-    # drops scheduled runs outright every few days — the second only matters
-    # when the first never fires, so it gets a margin of its own.
-    - cron: '30 15 * * *'
-    - cron: '30 17 * * *'
+    # Sunday UTC: early starts to compensate for GitHub scheduling delays.
+    # The booking gate waits until BOOKING_TIME in Europe/Madrid.
+    - cron: '0 9 * * 0'
+    - cron: '0 10 * * 0'
 
   # Run it manually from the Actions tab whenever you need to.
   # Useful when your gym opens the whole week at once — trigger once and
@@ -46,7 +41,7 @@ jobs:
         env:
           BOOKING_FREQUENCY: ${{ vars.BOOKING_FREQUENCY || 'daily' }}
           BOOKING_WEEKDAY: ${{ vars.BOOKING_WEEKDAY || 'sunday' }}
-          BOOKING_TIME: ${{ vars.BOOKING_TIME || '22:30' }}
+          BOOKING_TIME: ${{ vars.BOOKING_TIME || '13:30' }}
           EVENT_NAME: ${{ github.event_name }}
           TZ_NAME: Europe/Madrid
         run: |
@@ -214,6 +209,8 @@ jobs:
           SATURDAY: ${{ vars.SATURDAY }}
           SUNDAY: ${{ vars.SUNDAY }}
           AVAILABLE_DAYS: ${{ inputs.available_days || vars.AVAILABLE_DAYS }}
+          DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+          MONITOR_OPENING: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
         run: pnpm start
 
       - name: 💾 Save booking state
