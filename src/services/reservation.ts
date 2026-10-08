@@ -9,7 +9,8 @@ import {
 } from '../types';
 import { availableDays } from '../config';
 
-// IMPORTANTE: true = no pulsa Reservar
+// true = no realiza reservas reales.
+// false = permite pulsar Reservar.
 const DRY_RUN = process.env.DRY_RUN !== 'false';
 
 const RESERVATIONS_URL =
@@ -59,8 +60,6 @@ export async function goToReservations(
 
   await page.goto(url, { waitUntil: 'networkidle2' });
 
-  console.log(`🌐 Current URL: ${page.url()}`);
-
   if (page.url().includes('aspxerrorpath')) {
     throw new Error(`WodBuster navigation failed: ${page.url()}`);
   }
@@ -77,10 +76,8 @@ export async function getReservationState(
     el => el.textContent?.trim() ?? ''
   );
 
-  // Tu Box utiliza "Reservar" donde AutoWOD
-  // esperaba "Entrenar".
   if (text.toLowerCase() === 'reservar') {
-    return 'Entrenar' as ButtonText;
+    return 'Entrenar';
   }
 
   return text ? (text as ButtonText) : null;
@@ -185,11 +182,24 @@ async function findReservationButton(
 
   const targetTime = `${match[1]}:${match[2]}`;
 
-  await page.waitForSelector('#calendar .zonareservas', {
-    timeout: 15000,
-  });
+  // Una fecha futura puede existir en el calendario
+  // aunque sus clases todavía no estén publicadas.
+  const zone = await page
+    .waitForSelector('#calendar .zonareservas', {
+      timeout: 5000,
+    })
+    .catch(() => null);
 
-  const classes = await page.$$('#calendar .zonareservas div.clase');
+  if (!zone) {
+    console.log(
+      `⏳ No classes published yet for ${targetTime} ${className}`
+    );
+    return null;
+  }
+
+  const classes = await page.$$(
+    '#calendar .zonareservas div.clase'
+  );
 
   console.log(`🔎 Classes found: ${classes.length}`);
   console.log(`🎯 Searching ${targetTime} → ${className}`);
@@ -209,10 +219,6 @@ async function findReservationButton(
         )?.textContent?.trim() ?? '',
     }));
 
-    console.log(
-      `📋 ${info.time} → ${info.name} (${info.id})`
-    );
-
     if (
       info.time === targetTime &&
       normalizeClassName(info.name) ===
@@ -224,44 +230,45 @@ async function findReservationButton(
 
   if (matches.length !== 1) {
     console.log(
-      `⚠️ Expected exactly one matching class, found ${matches.length}`
+      `⏳ Matching class not available yet (matches: ${matches.length})`
     );
     return null;
   }
 
   const selectedClass = matches[0];
 
-  const buttons = await selectedClass.$$('.actionsjs button');
-  let button: ElementHandle<Element> | null = null;
-  for (const candidate of buttons) {
-    const label = await candidate.evaluate(el => el.textContent?.trim().toLowerCase() ?? '');
-    if (label === 'reservar' || label === 'borrar') {
-      button = candidate;
-      break;
+  const buttons = await selectedClass.$$(
+    '.actionsjs button'
+  );
+
+  for (const button of buttons) {
+    const text = (
+      await button.evaluate(el => el.textContent?.trim() ?? '')
+    ).toLowerCase();
+
+    if (text === 'borrar') {
+      console.log('✅ Class already booked');
+      return button;
+    }
+
+    if (text === 'reservar') {
+      const disabled = await button.evaluate(
+        el => (el as HTMLButtonElement).disabled
+      );
+
+      if (!disabled) {
+        console.log('✅ Reservation button available');
+        return button;
+      }
     }
   }
 
-  if (!button) {
-    console.log('⚠️ Matching class found, but neither Reservar nor Borrar is available');
-    return null;
-  }
-
-  const buttonText = await button.evaluate(
-    el => el.textContent?.trim() ?? ''
+  console.log(
+    '⏳ Matching class found, but reservation is not available'
   );
 
-  console.log(`🔘 Button: ${buttonText}`);
-
-  if (!['reservar', 'borrar'].includes(buttonText.toLowerCase())) {
-    console.log('⚠️ Button is neither Reservar nor Borrar');
-    return null;
-  }
-
-  console.log('✅ Correct reservation button identified');
-
-  return button;
+  return null;
 }
-
 
 export async function makeReservation(
   page: Page,
@@ -272,11 +279,10 @@ export async function makeReservation(
   const weekDay = await getWeekDayFromUrl(page);
   const date = getISODateFromUrl(page);
 
-  // 1. Comprobar si hay una clase configurada
   if (!time) {
     return {
       success: false,
-      message: `📅 No time scheduled for ${weekDay}s`,
+      message: `📅 No time scheduled for ${weekDay}`,
       weekDay,
       date,
     };
@@ -296,7 +302,6 @@ export async function makeReservation(
     `🎯 Searching ${weekDay} ${date} → ${time} → ${className}`
   );
 
-  // 2. Buscar la clase exacta
   const reservationKey = getReservationKey(time);
 
   const reservationButton = await findReservationButton(
@@ -309,16 +314,29 @@ export async function makeReservation(
     return {
       success: false,
       message:
-        `🔍 No available reservation button found for ` +
-        `${date} at ${time} (${className})`,
+        `⏳ Reservation pending: ` +
+        `${date} ${time} ${className}`,
       weekDay,
       date,
       time,
     };
   }
 
-  // 3. Comprobar el estado del botón
-  const state = await getReservationState(reservationButton);
+  const state = await getReservationState(
+    reservationButton
+  );
+
+  if (state === 'Borrar') {
+    return {
+      success: true,
+      message:
+        `✅ Already booked: ${date} ${time} ${className}`,
+      weekDay,
+      date,
+      time,
+      state,
+    };
+  }
 
   if (!state) {
     return {
@@ -339,7 +357,6 @@ export async function makeReservation(
     state,
   };
 
-  // 4. Modo de prueba: no pulsar ningún botón
   if (DRY_RUN) {
     result.message =
       `🧪 DRY RUN: ${date} ${time} ${className} ` +
@@ -349,98 +366,72 @@ export async function makeReservation(
     return result;
   }
 
-  // 5. Reserva real
-  switch (state) {
-    case 'Entrenar': {
-      // Identificar el contenedor de la clase correcta
-      const classId = await reservationButton.evaluate(
-        el => el.closest('.clase')?.id ?? ''
+  if (state === 'Entrenar') {
+    const classId = await reservationButton.evaluate(
+      el => el.closest('.clase')?.id ?? ''
+    );
+
+    if (!classId) {
+      throw new Error(
+        'Could not identify the selected class'
       );
-
-      if (!classId) {
-        throw new Error(
-          '❌ Could not identify the selected class'
-        );
-      }
-
-      console.log(`🎯 Booking class: ${classId}`);
-
-      // Pulsar el botón Reservar
-      await reservationButton.click();
-
-      console.log('🖱️ Reservar button clicked');
-
-      // Esperar a que WodBuster confirme la reserva
-      try {
-        await page.waitForFunction(
-          (id: string) => {
-            const container = document.getElementById(id);
-
-            if (!container) return false;
-
-            const buttons = Array.from(
-              container.querySelectorAll(
-                '.actionsjs button'
-              )
-            );
-
-            return buttons.some(
-              button =>
-                button.textContent
-                  ?.trim()
-                  .toLowerCase() === 'borrar'
-            );
-          },
-          {
-            timeout: 10000,
-            polling: 250,
-          },
-          classId
-        );
-
-        result.success = true;
-        result.message =
-          `✅ Booking confirmed: ` +
-          `${date} ${time} ${className}`;
-
-      } catch {
-        result.success = false;
-        result.message =
-          `⚠️ Booking clicked but not confirmed: ` +
-          `${date} ${time} ${className}`;
-      }
-
-      break;
     }
 
-    case 'Avisar':
+    console.log(`🎯 Booking class: ${classId}`);
+
+    await reservationButton.click();
+
+    console.log('🖱️ Reservar button clicked');
+
+    try {
+      await page.waitForFunction(
+        (id: string) => {
+          const container = document.getElementById(id);
+
+          if (!container) return false;
+
+          const buttons = Array.from(
+            container.querySelectorAll(
+              '.actionsjs button'
+            )
+          );
+
+          return buttons.some(
+            button =>
+              button.textContent
+                ?.trim()
+                .toLowerCase() === 'borrar'
+          );
+        },
+        {
+          timeout: 10000,
+          polling: 250,
+        },
+        classId
+      );
+
+      result.success = true;
       result.message =
-        '⚠️ Waiting list detected; no automatic click';
-      break;
-
-    case 'Borrar':
-      result.message = 'ℹ️ Already booked';
-      break;
-
-    case 'Cambiar':
+        `✅ Booking confirmed: ` +
+        `${date} ${time} ${className}`;
+    } catch {
+      // No damos por confirmada una reserva sin
+      // comprobar su estado en el servidor.
+      // En el siguiente ciclo se volverá a leer
+      // el calendario antes de cualquier clic.
       result.message =
-        '⚠️ Already booked at another time';
-      break;
-
-    case 'Finalizada':
-      result.message = '❌ Class already finished';
-      break;
-
-    default:
-      result.message =
-        `⚠️ Unrecognized booking state: ${state}`;
+        `⚠️ Booking clicked but not confirmed: ` +
+        `${date} ${time} ${className}`;
+    }
+  } else {
+    result.message =
+      `⚠️ Unexpected booking state: ${state}`;
   }
 
   console.log(result.message);
 
   return result;
 }
-
 
 function writeJobSummary(
   dayResults: Array<{
@@ -470,6 +461,8 @@ function writeJobSummary(
       status = 'Skipped';
     } else if (DRY_RUN && result.state === 'Entrenar') {
       status = 'Dry run - button identified';
+    } else if (result.state === 'Borrar') {
+      status = 'Already booked';
     } else if (result.success) {
       status = 'Booked';
     }
@@ -530,12 +523,12 @@ export async function processReservations(
 
     if (!preference) {
       skipped++;
+    } else if (result.state === 'Borrar') {
+      alreadyBooked++;
     } else if (result.success && result.state === 'Entrenar') {
       booked++;
     } else if (result.success && result.state === 'Avisar') {
       waitlisted++;
-    } else if (result.state === 'Borrar') {
-      alreadyBooked++;
     } else {
       other++;
     }
