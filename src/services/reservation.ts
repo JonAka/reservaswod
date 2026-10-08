@@ -10,7 +10,7 @@ import {
 import { availableDays } from '../config';
 
 // IMPORTANTE: true = no pulsa Reservar
-const DRY_RUN = true;
+const DRY_RUN = false;
 
 const RESERVATIONS_URL =
   'https://tubox.wodbuster.com/athlete/reservas.aspx';
@@ -258,16 +258,17 @@ async function findReservationButton(
   return button;
 }
 
+
 export async function makeReservation(
   page: Page,
   preference: string | null
 ): Promise<ReservationResult> {
-  const { time, className } =
-    parsePreferenceValue(preference);
+  const { time, className } = parsePreferenceValue(preference);
 
   const weekDay = await getWeekDayFromUrl(page);
   const date = getISODateFromUrl(page);
 
+  // 1. Comprobar si hay una clase configurada
   if (!time) {
     return {
       success: false,
@@ -277,10 +278,21 @@ export async function makeReservation(
     };
   }
 
+  if (!className) {
+    return {
+      success: false,
+      message: `⚠️ No class name configured for ${weekDay}`,
+      weekDay,
+      date,
+      time,
+    };
+  }
+
   console.log(
     `🎯 Searching ${weekDay} ${date} → ${time} → ${className}`
   );
 
+  // 2. Buscar la clase exacta
   const reservationKey = getReservationKey(time);
 
   const reservationButton = await findReservationButton(
@@ -301,14 +313,13 @@ export async function makeReservation(
     };
   }
 
-  const state = await getReservationState(
-    reservationButton
-  );
+  // 3. Comprobar el estado del botón
+  const state = await getReservationState(reservationButton);
 
   if (!state) {
     return {
       success: false,
-      message: `⚠️ Unable to determine booking state`,
+      message: '⚠️ Unable to determine booking state',
       weekDay,
       date,
       time,
@@ -324,48 +335,76 @@ export async function makeReservation(
     state,
   };
 
+  // 4. Modo de prueba: no pulsar ningún botón
   if (DRY_RUN) {
     result.message =
       `🧪 DRY RUN: ${date} ${time} ${className} ` +
-      `→ button found, NO CLICK performed`;
+      '→ button found, NO CLICK performed';
 
     console.log(result.message);
     return result;
   }
 
+  // 5. Reserva real
   switch (state) {
     case 'Entrenar': {
-      await reservationButton.click();
-      await page.waitForNetworkIdle({
-        timeout: 5000,
-      }).catch(() => {});
-
-      // A click alone does not prove that WodBuster
-      // accepted the reservation.
-      const classContainer = await reservationButton.evaluate(
+      // Identificar el contenedor de la clase correcta
+      const classId = await reservationButton.evaluate(
         el => el.closest('.clase')?.id ?? ''
-      ).catch(() => '');
+      );
 
-      const updatedButton = classContainer
-        ? await page.$(
-            `#${classContainer} .actionsjs button`
-          )
-        : null;
+      if (!classId) {
+        throw new Error(
+          '❌ Could not identify the selected class'
+        );
+      }
 
-      const updatedState = updatedButton
-        ? (await updatedButton.evaluate(
-            el => el.textContent?.trim() ?? ''
-          )).toLowerCase()
-        : '';
+      console.log(`🎯 Booking class: ${classId}`);
 
-      result.success = updatedState === 'borrar';
-      result.state = result.success
-        ? ('Entrenar' as ButtonText)
-        : state;
+      // Pulsar el botón Reservar
+      await reservationButton.click();
 
-      result.message = result.success
-        ? `✅ Booking confirmed: ${date} ${time} ${className}`
-        : `⚠️ Booking clicked, but confirmation not verified: ${date} ${time}`;
+      console.log('🖱️ Reservar button clicked');
+
+      // Esperar a que WodBuster confirme la reserva
+      try {
+        await page.waitForFunction(
+          (id: string) => {
+            const container = document.getElementById(id);
+
+            if (!container) return false;
+
+            const buttons = Array.from(
+              container.querySelectorAll(
+                '.actionsjs button'
+              )
+            );
+
+            return buttons.some(
+              button =>
+                button.textContent
+                  ?.trim()
+                  .toLowerCase() === 'borrar'
+            );
+          },
+          {
+            timeout: 10000,
+            polling: 250,
+          },
+          classId
+        );
+
+        result.success = true;
+        result.message =
+          `✅ Booking confirmed: ` +
+          `${date} ${time} ${className}`;
+
+      } catch {
+        result.success = false;
+        result.message =
+          `⚠️ Booking clicked but not confirmed: ` +
+          `${date} ${time} ${className}`;
+      }
 
       break;
     }
@@ -393,8 +432,11 @@ export async function makeReservation(
         `⚠️ Unrecognized booking state: ${state}`;
   }
 
+  console.log(result.message);
+
   return result;
 }
+
 
 function writeJobSummary(
   dayResults: Array<{
