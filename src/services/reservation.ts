@@ -162,62 +162,81 @@ async function findReservationButton(
   reservationKey: string,
   className: string | null
 ): Promise<ElementHandle<Element> | null> {
-  console.log(`🔎 Looking for reservation key: ${reservationKey}`);
-  console.log(`🔎 Looking for class: ${className ?? 'any'}`);
 
-  // Buscar todos los botones "Reservar"
-  const buttons = await page.$$(
-    'button'
+  const targetTime = reservationKey.match(
+    /^h(\d{2})(\d{2})\d{2}$/
   );
 
-  console.log(`🔎 Total buttons on page: ${buttons.length}`);
+  if (!targetTime) {
+    throw new Error(`Invalid reservation key: ${reservationKey}`);
+  }
 
-  for (let i = 0; i < buttons.length; i++) {
-    const button = buttons[i];
+  const time = `${targetTime[1]}:${targetTime[2]}`;
+
+  if (!className) {
+    throw new Error('Class name is required for safe booking');
+  }
+
+  const normalize = (value: string) =>
+    value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\*/g, '')
+      .trim()
+      .toLowerCase();
+
+  const classes = await page.$$('div.clase');
+
+  console.log(`🔎 Looking for ${time} → ${className}`);
+
+  for (const classElement of classes) {
+    const info = await classElement.evaluate(el => ({
+      id: el.id,
+      name:
+        el.querySelector('.entrenamientoHead .entrenamiento')
+          ?.textContent?.trim() ?? '',
+      time:
+        el.querySelector('.entrenamientoHead .hora')
+          ?.textContent?.trim() ?? ''
+    }));
+
+    if (
+      info.time !== time ||
+      normalize(info.name) !== normalize(className)
+    ) {
+      continue;
+    }
+
+    console.log(
+      `✅ Class found: ${info.id} → ${info.time} ${info.name}`
+    );
+
+    const button = await classElement.$(
+      '.actionsjs button.button.entrenar'
+    );
+
+    if (!button) {
+      console.log('⚠️ Class found, but booking button is missing');
+      return null;
+    }
 
     const buttonText = await button.evaluate(
       el => el.textContent?.trim() ?? ''
     );
 
-    if (buttonText !== 'Reservar') {
-      continue;
-    }
+    console.log(`🔘 Button found: ${buttonText}`);
 
-    // Obtener el contenedor padre relevante de la clase
-    const info = await button.evaluate(el => {
-      let current: HTMLElement | null = el.parentElement;
-
-      for (let level = 0; level < 6 && current; level++) {
-        const text = current.innerText?.trim() ?? '';
-
-        if (text.length > 0) {
-          return {
-            tag: current.tagName,
-            className: current.className,
-            text,
-            html: current.outerHTML.substring(0, 2000),
-          };
-        }
-
-        current = current.parentElement;
-      }
-
+    if (buttonText.toLowerCase() !== 'reservar') {
+      console.log('⚠️ Button is not in Reservar state');
       return null;
-    });
-
-    console.log(`\n🔘 RESERVAR #${i}`);
-
-    if (info) {
-      console.log(`📄 Container: ${info.tag}`);
-      console.log(`📄 Classes: ${info.className}`);
-      console.log(`📄 Text: ${info.text}`);
-      console.log(`📄 HTML: ${info.html}`);
     }
+
+    console.log('🎯 Correct booking button identified');
+
+    return button;
   }
 
-  console.log(
-    '🔎 No exact reservation selected yet — printing reservation structure.'
-  );
+  console.log(`❌ Class not found: ${time} ${className}`);
 
   return null;
 }
