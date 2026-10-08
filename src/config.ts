@@ -1,12 +1,9 @@
 import { ReservationPreferences } from './types';
-
-export const baseUrl = 'https://wodbuster.com';
-
+export const baseUrl = 'https://tubox.wodbuster.com';
 export const email = process.env.EMAIL ?? '';
 export const password = process.env.PASSWORD ?? '';
 export const twoCaptchaApiKey = process.env.TWO_CAPTCHA_API_KEY ?? '';
 export const isCI = process.env.CI === 'true';
-
 export const reservationsPreferences: ReservationPreferences = {
   monday: process.env.MONDAY || null,
   tuesday: process.env.TUESDAY || null,
@@ -16,5 +13,4 @@ export const reservationsPreferences: ReservationPreferences = {
   saturday: process.env.SATURDAY || null,
   sunday: process.env.SUNDAY || null,
 };
-
 export const availableDays = Number(process.env.AVAILABLE_DAYS || 7);
