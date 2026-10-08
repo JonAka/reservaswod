@@ -1,3 +1,4 @@
+
 import { appendFileSync } from 'fs';
 import { Page, ElementHandle } from 'puppeteer';
 import {
@@ -7,6 +8,12 @@ import {
   WeekDay,
 } from '../types';
 import { availableDays } from '../config';
+
+// IMPORTANTE: true = no pulsa Reservar
+const DRY_RUN = true;
+
+const RESERVATIONS_URL =
+  'https://tubox.wodbuster.com/athlete/reservas.aspx';
 
 export function parsePreferenceValue(value: string | null): {
   time: string | null;
@@ -22,117 +29,101 @@ export function parsePreferenceValue(value: string | null): {
   };
 }
 
-export async function goToReservations(page: Page): Promise<void> {
+function getTimestampFromUrl(page: Page): number {
+  const url = new URL(page.url());
+  const raw = url.searchParams.get('t');
+
+  if (!raw || !/^\d+$/.test(raw)) {
+    throw new Error(`Invalid reservation URL: ${page.url()}`);
+  }
+
+  const timestamp = Number(raw);
+
+  if (!Number.isSafeInteger(timestamp)) {
+    throw new Error(`Invalid timestamp: ${raw}`);
+  }
+
+  return timestamp;
+}
+
+export async function goToReservations(
+  page: Page
+): Promise<void> {
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
 
-  const todayInSeconds = Math.floor(today.getTime() / 1000);
+  const timestamp = Math.floor(today.getTime() / 1000);
+  const url = `${RESERVATIONS_URL}?t=${timestamp}`;
 
-  const reservationsUrl =
-    `https://tubox.wodbuster.com/athlete/reservas.aspx?t=${todayInSeconds}`;
+  console.log(`🏋️ Going to reservations: ${url}`);
 
-  console.log(`🏋️ Going to reservations: ${reservationsUrl}`);
+  await page.goto(url, { waitUntil: 'networkidle2' });
 
-  await page.goto(reservationsUrl, {
-    waitUntil: 'networkidle2',
-  });
-
-  console.log(`🌐 Current URL after navigation: ${page.url()}`);
+  console.log(`🌐 Current URL: ${page.url()}`);
 
   if (page.url().includes('aspxerrorpath')) {
-    throw new Error(
-      `WodBuster redirected to an error page instead of reservations. Current URL: ${page.url()}`
-    );
+    throw new Error(`WodBuster navigation failed: ${page.url()}`);
   }
+
+  await page.waitForSelector('#calendar', {
+    timeout: 15000,
+  });
 }
 
 export async function getReservationState(
   reservationButton: ElementHandle<Element>
 ): Promise<ButtonText | null> {
-  const buttonText = await reservationButton.evaluate(
+  const text = await reservationButton.evaluate(
     el => el.textContent?.trim() ?? ''
   );
 
-  console.log(`🔘 Reservation button text: "${buttonText}"`);
-
-  /*
-   * Tu WodBuster utiliza "Reservar".
-   * El proyecto original esperaba "Entrenar".
-   * Para no tener que modificar ButtonText en types.ts,
-   * normalizamos "Reservar" como "Entrenar".
-   */
-  if (buttonText.toLowerCase() === 'reservar') {
+  // Tu Box utiliza "Reservar" donde AutoWOD
+  // esperaba "Entrenar".
+  if (text.toLowerCase() === 'reservar') {
     return 'Entrenar' as ButtonText;
   }
 
-  return buttonText as ButtonText | null;
+  return text ? (text as ButtonText) : null;
 }
 
 export function getReservationKey(time: string): string {
+  if (!/^\d{2}:\d{2}$/.test(time)) {
+    throw new Error(`Invalid reservation time: ${time}`);
+  }
+
   return `h${time.replace(':', '')}00`;
 }
 
-function getTimestampFromUrl(page: Page): number {
-  const url = new URL(page.url());
-  const timestamp = url.searchParams.get('t');
-
-  if (!timestamp || !/^\d+$/.test(timestamp)) {
-    throw new Error(
-      `Invalid WodBuster date parameter. URL: ${page.url()}`
-    );
-  }
-
-  const value = Number(timestamp);
-
-  if (!Number.isFinite(value)) {
-    throw new Error(
-      `Invalid timestamp received from WodBuster: ${timestamp}`
-    );
-  }
-
-  return value;
-}
-
-export async function goToNextDay(page: Page): Promise<void> {
-  const currentTimestamp = getTimestampFromUrl(page);
-
-  const currentDate = new Date(currentTimestamp * 1000);
-
-  if (Number.isNaN(currentDate.getTime())) {
-    throw new Error(
-      `❌ Invalid current date from timestamp: ${currentTimestamp}`
-    );
-  }
-
-  // Move exactly ONE calendar day forward.
-  currentDate.setUTCDate(currentDate.getUTCDate() + 1);
-
-  const nextTimestamp = Math.floor(currentDate.getTime() / 1000);
-
-  const nextUrl =
-    `https://tubox.wodbuster.com/athlete/reservas.aspx?t=${nextTimestamp}`;
-
-  console.log(`➡️ Moving to next day: ${nextUrl}`);
-
-  await page.goto(nextUrl, {
-    waitUntil: 'networkidle2',
-  });
-
-  console.log(`➡️ New reservation URL: ${page.url()}`);
-
-  if (page.url().includes('aspxerrorpath')) {
-    throw new Error(
-      `❌ WodBuster redirected to an error page: ${page.url()}`
-    );
-  }
-}
-
-export async function getWeekDayFromUrl(page: Page): Promise<string> {
+export async function goToNextDay(
+  page: Page
+): Promise<void> {
   const timestamp = getTimestampFromUrl(page);
-
   const date = new Date(timestamp * 1000);
 
-  return date
+  date.setUTCDate(date.getUTCDate() + 1);
+
+  const nextTimestamp = Math.floor(date.getTime() / 1000);
+  const url = `${RESERVATIONS_URL}?t=${nextTimestamp}`;
+
+  console.log(`➡️ Moving to next day: ${url}`);
+
+  await page.goto(url, { waitUntil: 'networkidle2' });
+
+  if (page.url().includes('aspxerrorpath')) {
+    throw new Error(`WodBuster navigation failed: ${page.url()}`);
+  }
+
+  await page.waitForSelector('#calendar', {
+    timeout: 15000,
+  });
+}
+
+export async function getWeekDayFromUrl(
+  page: Page
+): Promise<string> {
+  const timestamp = getTimestampFromUrl(page);
+
+  return new Date(timestamp * 1000)
     .toLocaleDateString('en-US', {
       weekday: 'long',
       timeZone: 'UTC',
@@ -140,21 +131,38 @@ export async function getWeekDayFromUrl(page: Page): Promise<string> {
     .toLowerCase();
 }
 
-export async function getDateFromUrl(page: Page): Promise<string> {
+export async function getDateFromUrl(
+  page: Page
+): Promise<string> {
   const timestamp = getTimestampFromUrl(page);
 
-  return Intl.DateTimeFormat('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    timeZone: 'UTC',
-  }).format(new Date(timestamp * 1000));
+  return new Date(timestamp * 1000).toLocaleDateString(
+    'en-US',
+    {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    }
+  );
 }
 
 export function getISODateFromUrl(page: Page): string {
   const timestamp = getTimestampFromUrl(page);
 
-  return new Date(timestamp * 1000).toISOString().split('T')[0];
+  return new Date(timestamp * 1000)
+    .toISOString()
+    .split('T')[0];
+}
+
+function normalizeClassName(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }
 
 async function findReservationButton(
@@ -162,98 +170,103 @@ async function findReservationButton(
   reservationKey: string,
   className: string | null
 ): Promise<ElementHandle<Element> | null> {
-
-  const targetTime = reservationKey.match(
-    /^h(\d{2})(\d{2})\d{2}$/
+  const match = /^h(\d{2})(\d{2})\d{2}$/.exec(
+    reservationKey
   );
 
-  if (!targetTime) {
+  if (!match) {
     throw new Error(`Invalid reservation key: ${reservationKey}`);
   }
 
-  const time = `${targetTime[1]}:${targetTime[2]}`;
-
   if (!className) {
-    throw new Error('Class name is required for safe booking');
+    console.log('⚠️ Class name is required');
+    return null;
   }
 
-  const normalize = (value: string) =>
-    value
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\*/g, '')
-      .trim()
-      .toLowerCase();
+  const targetTime = `${match[1]}:${match[2]}`;
 
-  const classes = await page.$$('div.clase');
+  await page.waitForSelector('#calendar .zonareservas', {
+    timeout: 15000,
+  });
 
-  console.log(`🔎 Looking for ${time} → ${className}`);
+  const classes = await page.$$('#calendar .zonareservas div.clase');
+
+  console.log(`🔎 Classes found: ${classes.length}`);
+  console.log(`🎯 Searching ${targetTime} → ${className}`);
+
+  const matches: ElementHandle<Element>[] = [];
 
   for (const classElement of classes) {
     const info = await classElement.evaluate(el => ({
       id: el.id,
       name:
-        el.querySelector('.entrenamientoHead .entrenamiento')
-          ?.textContent?.trim() ?? '',
+        el.querySelector(
+          '.entrenamientoHead .entrenamiento'
+        )?.textContent?.trim() ?? '',
       time:
-        el.querySelector('.entrenamientoHead .hora')
-          ?.textContent?.trim() ?? ''
+        el.querySelector(
+          '.entrenamientoHead .hora'
+        )?.textContent?.trim() ?? '',
     }));
 
-    if (
-      info.time !== time ||
-      normalize(info.name) !== normalize(className)
-    ) {
-      continue;
-    }
-
     console.log(
-      `✅ Class found: ${info.id} → ${info.time} ${info.name}`
+      `📋 ${info.time} → ${info.name} (${info.id})`
     );
 
-    const button = await classElement.$(
-      '.actionsjs button.button.entrenar'
-    );
-
-    if (!button) {
-      console.log('⚠️ Class found, but booking button is missing');
-      return null;
+    if (
+      info.time === targetTime &&
+      normalizeClassName(info.name) ===
+        normalizeClassName(className)
+    ) {
+      matches.push(classElement);
     }
-
-    const buttonText = await button.evaluate(
-      el => el.textContent?.trim() ?? ''
-    );
-
-    console.log(`🔘 Button found: ${buttonText}`);
-
-    if (buttonText.toLowerCase() !== 'reservar') {
-      console.log('⚠️ Button is not in Reservar state');
-      return null;
-    }
-
-    console.log('🎯 Correct booking button identified');
-
-    return button;
   }
 
-  console.log(`❌ Class not found: ${time} ${className}`);
+  if (matches.length !== 1) {
+    console.log(
+      `⚠️ Expected exactly one matching class, found ${matches.length}`
+    );
+    return null;
+  }
 
-  return null;
+  const selectedClass = matches[0];
+
+  const button = await selectedClass.$(
+    '.actionsjs button.button.entrenar'
+  );
+
+  if (!button) {
+    console.log(
+      '⚠️ Matching class found, but no Reservar button'
+    );
+    return null;
+  }
+
+  const buttonText = await button.evaluate(
+    el => el.textContent?.trim() ?? ''
+  );
+
+  console.log(`🔘 Button: ${buttonText}`);
+
+  if (buttonText.toLowerCase() !== 'reservar') {
+    console.log('⚠️ Button is not in Reservar state');
+    return null;
+  }
+
+  console.log('✅ Correct reservation button identified');
+
+  return button;
 }
 
 export async function makeReservation(
   page: Page,
   preference: string | null
 ): Promise<ReservationResult> {
-  const { time, className } = parsePreferenceValue(preference);
+  const { time, className } =
+    parsePreferenceValue(preference);
 
   const weekDay = await getWeekDayFromUrl(page);
   const date = getISODateFromUrl(page);
-
-  const pageTitle = await page.$('.mainTitle');
-
-  const pageTitleText =
-    (await pageTitle?.evaluate(el => el.textContent)) ?? '';
 
   if (!time) {
     return {
@@ -264,11 +277,11 @@ export async function makeReservation(
     };
   }
 
-  const reservationKey = getReservationKey(time);
-
   console.log(
-    `🎯 Searching ${weekDay} ${date} → ${time} → ${className ?? 'any class'}`
+    `🎯 Searching ${weekDay} ${date} → ${time} → ${className}`
   );
+
+  const reservationKey = getReservationKey(time);
 
   const reservationButton = await findReservationButton(
     page,
@@ -279,23 +292,23 @@ export async function makeReservation(
   if (!reservationButton) {
     return {
       success: false,
-      message: `🔍 No reservation slot found for ${await getDateFromUrl(
-        page
-      )} at ${time}${className ? ` (${className})` : ''}`,
+      message:
+        `🔍 No available reservation button found for ` +
+        `${date} at ${time} (${className})`,
       weekDay,
       date,
       time,
     };
   }
 
-  const state = await getReservationState(reservationButton);
+  const state = await getReservationState(
+    reservationButton
+  );
 
   if (!state) {
     return {
       success: false,
-      message: `⚠️ Unable to determine reservation status for ${await getDateFromUrl(
-        page
-      )} at ${time}`,
+      message: `⚠️ Unable to determine booking state`,
       weekDay,
       date,
       time,
@@ -303,7 +316,7 @@ export async function makeReservation(
   }
 
   const result: ReservationResult = {
-    success: true,
+    success: false,
     message: '',
     weekDay,
     date,
@@ -311,70 +324,73 @@ export async function makeReservation(
     state,
   };
 
+  if (DRY_RUN) {
+    result.message =
+      `🧪 DRY RUN: ${date} ${time} ${className} ` +
+      `→ button found, NO CLICK performed`;
+
+    console.log(result.message);
+    return result;
+  }
+
   switch (state) {
-    /*
-     * "Reservar" se normaliza a "Entrenar" en
-     * getReservationState(), por lo que llega aquí.
-     */
-    case 'Entrenar':
-      console.log(
-        `🟢 Clicking reservation button for ${weekDay} ${date} at ${time}`
-      );
-
+    case 'Entrenar': {
       await reservationButton.click();
+      await page.waitForNetworkIdle({
+        timeout: 5000,
+      }).catch(() => {});
 
-      await page
-        .waitForNetworkIdle({ timeout: 5000 })
-        .catch(() => {});
+      // A click alone does not prove that WodBuster
+      // accepted the reservation.
+      const classContainer = await reservationButton.evaluate(
+        el => el.closest('.clase')?.id ?? ''
+      ).catch(() => '');
 
-      result.message =
-        `✅ ${pageTitleText} - Successfully booked! 💪`;
+      const updatedButton = classContainer
+        ? await page.$(
+            `#${classContainer} .actionsjs button`
+          )
+        : null;
+
+      const updatedState = updatedButton
+        ? (await updatedButton.evaluate(
+            el => el.textContent?.trim() ?? ''
+          )).toLowerCase()
+        : '';
+
+      result.success = updatedState === 'borrar';
+      result.state = result.success
+        ? ('Entrenar' as ButtonText)
+        : state;
+
+      result.message = result.success
+        ? `✅ Booking confirmed: ${date} ${time} ${className}`
+        : `⚠️ Booking clicked, but confirmation not verified: ${date} ${time}`;
 
       break;
+    }
 
     case 'Avisar':
-      await reservationButton.click();
-
-      await page
-        .waitForNetworkIdle({ timeout: 5000 })
-        .catch(() => {});
-
       result.message =
-        `⏳ ${pageTitleText} - Added to waiting list. Fingers crossed! 🤞`;
+        '⚠️ Waiting list detected; no automatic click';
+      break;
 
+    case 'Borrar':
+      result.message = 'ℹ️ Already booked';
       break;
 
     case 'Cambiar':
       result.message =
-        `⚠️ ${pageTitleText} - You're already booked for a different time slot`;
-
-      result.success = false;
-
+        '⚠️ Already booked at another time';
       break;
 
     case 'Finalizada':
-      result.message =
-        `❌ ${pageTitleText} - This class has already finished`;
-
-      result.success = false;
-
-      break;
-
-    case 'Borrar':
-      result.message =
-        `ℹ️ ${pageTitleText} - You're already booked`;
-
-      result.success = false;
-
+      result.message = '❌ Class already finished';
       break;
 
     default:
       result.message =
-        `⚠️ Unknown reservation state: "${state}"`;
-
-      result.success = false;
-
-      break;
+        `⚠️ Unrecognized booking state: ${state}`;
   }
 
   return result;
@@ -392,98 +408,54 @@ function writeJobSummary(
     skipped: number;
     other: number;
   }
-) {
+): void {
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
 
   if (!summaryFile) return;
-
-  const statusLabel = (
-    result: ReservationResult
-  ): string => {
-    if (!result.time) return '⏭️ Skipped';
-
-    if (result.state === 'Entrenar' && result.success) {
-      return '✅ Booked';
-    }
-
-    if (result.state === 'Avisar' && result.success) {
-      return '⏳ Waitlisted';
-    }
-
-    if (result.state === 'Borrar') {
-      return 'ℹ️ Already booked';
-    }
-
-    if (result.state === 'Finalizada') {
-      return '❌ Class already finished';
-    }
-
-    if (result.state === 'Cambiar') {
-      return '⚠️ Booked at a different time';
-    }
-
-    return '🔍 Slot not found';
-  };
 
   const rows = dayResults.map(({ weekDay, result }) => {
     const day =
       weekDay.charAt(0).toUpperCase() +
       weekDay.slice(1);
 
-    const time = result.time ?? '—';
+    let status = result.message;
 
-    return `| ${day} | ${time} | ${statusLabel(result)} |`;
+    if (!result.time) {
+      status = 'Skipped';
+    } else if (DRY_RUN && result.state === 'Entrenar') {
+      status = 'Dry run - button identified';
+    } else if (result.success) {
+      status = 'Booked';
+    }
+
+    return `| ${day} | ${result.time ?? '—'} | ${status.replace(/\|/g, '/')} |`;
   });
 
-  const totals = [
-    counts.booked > 0
-      ? `**${counts.booked} booked**`
-      : null,
-
-    counts.waitlisted > 0
-      ? `${counts.waitlisted} waitlisted`
-      : null,
-
-    counts.alreadyBooked > 0
-      ? `${counts.alreadyBooked} already booked`
-      : null,
-
-    counts.skipped > 0
-      ? `${counts.skipped} skipped`
-      : null,
-
-    counts.other > 0
-      ? `${counts.other} other`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-
   const lines = [
-    '## 🏋️ AutoWOD Booking Results',
+    '## AutoWOD Results',
+    '',
+    `Mode: ${DRY_RUN ? 'DRY RUN' : 'LIVE'}`,
     '',
     '| Day | Time | Status |',
-    '|-----|------|--------|',
+    '|---|---|---|',
     ...rows,
     '',
-    totals,
+    `Booked: ${counts.booked}`,
+    `Waitlisted: ${counts.waitlisted}`,
+    `Already booked: ${counts.alreadyBooked}`,
+    `Skipped: ${counts.skipped}`,
+    `Other: ${counts.other}`,
     '',
   ];
 
-  appendFileSync(
-    summaryFile,
-    lines.join('\n')
-  );
+  appendFileSync(summaryFile, lines.join('\n'));
 }
 
 export async function processReservations(
   page: Page,
   preferences: ReservationPreferences
 ): Promise<
-  Array<{
-    weekDay: string;
-    result: ReservationResult;
-  }>
+  Array<{ weekDay: string; result: ReservationResult }>
 > {
   const dayResults: Array<{
     weekDay: string;
@@ -493,8 +465,8 @@ export async function processReservations(
   let booked = 0;
   let waitlisted = 0;
   let alreadyBooked = 0;
-  let other = 0;
   let skipped = 0;
+  let other = 0;
 
   for (let i = 0; i < availableDays; i++) {
     const weekDay = await getWeekDayFromUrl(page);
@@ -507,68 +479,47 @@ export async function processReservations(
       preference
     );
 
-    dayResults.push({
-      weekDay,
-      result,
-    });
-
+    dayResults.push({ weekDay, result });
     console.log(result.message);
 
     if (!preference) {
       skipped++;
-    } else if (
-      result.state === 'Entrenar' &&
-      result.success
-    ) {
+    } else if (result.success && result.state === 'Entrenar') {
       booked++;
-    } else if (
-      result.state === 'Avisar' &&
-      result.success
-    ) {
+    } else if (result.success && result.state === 'Avisar') {
       waitlisted++;
-    } else if (
-      result.state === 'Borrar'
-    ) {
+    } else if (result.state === 'Borrar') {
       alreadyBooked++;
     } else {
       other++;
     }
 
-    if (i === availableDays - 1) {
-      break;
-    }
+    if (i === availableDays - 1) break;
 
-    const dateBefore =
-      getISODateFromUrl(page);
+    const dateBefore = getISODateFromUrl(page);
 
     await goToNextDay(page);
 
-    const dateAfter =
-      getISODateFromUrl(page);
-
-    if (dateAfter === dateBefore) {
-      console.log(
-        `📆 ${dateBefore} did not advance — stopping.`
-      );
-
+    if (getISODateFromUrl(page) === dateBefore) {
+      console.log('📆 Calendar did not advance');
       break;
     }
   }
 
   console.log(
-    `📊 Summary -> booked: ${booked}, waitlist: ${waitlisted}, already booked: ${alreadyBooked}, skipped (no time): ${skipped}, other: ${other}`
+    `📊 Summary -> booked: ${booked}, ` +
+    `waitlist: ${waitlisted}, ` +
+    `already booked: ${alreadyBooked}, ` +
+    `skipped: ${skipped}, other: ${other}`
   );
 
-  writeJobSummary(
-    dayResults,
-    {
-      booked,
-      waitlisted,
-      alreadyBooked,
-      skipped,
-      other,
-    }
-  );
+  writeJobSummary(dayResults, {
+    booked,
+    waitlisted,
+    alreadyBooked,
+    skipped,
+    other,
+  });
 
   return dayResults;
 }
