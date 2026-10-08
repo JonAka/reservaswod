@@ -10,7 +10,7 @@ import {
 import { availableDays } from '../config';
 
 // IMPORTANTE: true = no pulsa Reservar
-const DRY_RUN = false;
+const DRY_RUN = process.env.DRY_RUN !== 'false';
 
 const RESERVATIONS_URL =
   'https://tubox.wodbuster.com/athlete/reservas.aspx';
@@ -231,14 +231,18 @@ async function findReservationButton(
 
   const selectedClass = matches[0];
 
-  const button = await selectedClass.$(
-    '.actionsjs button.button.entrenar'
-  );
+  const buttons = await selectedClass.$$('.actionsjs button');
+  let button: ElementHandle<Element> | null = null;
+  for (const candidate of buttons) {
+    const label = await candidate.evaluate(el => el.textContent?.trim().toLowerCase() ?? '');
+    if (label === 'reservar' || label === 'borrar') {
+      button = candidate;
+      break;
+    }
+  }
 
   if (!button) {
-    console.log(
-      '⚠️ Matching class found, but no Reservar button'
-    );
+    console.log('⚠️ Matching class found, but neither Reservar nor Borrar is available');
     return null;
   }
 
@@ -248,8 +252,8 @@ async function findReservationButton(
 
   console.log(`🔘 Button: ${buttonText}`);
 
-  if (buttonText.toLowerCase() !== 'reservar') {
-    console.log('⚠️ Button is not in Reservar state');
+  if (!['reservar', 'borrar'].includes(buttonText.toLowerCase())) {
+    console.log('⚠️ Button is neither Reservar nor Borrar');
     return null;
   }
 
