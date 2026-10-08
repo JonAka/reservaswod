@@ -1,5 +1,5 @@
 import { ReservationPreferences } from './types';
-export const baseUrl = 'https://tubox.wodbuster.com';
+export const baseUrl = 'https://wodbuster.com';
 export const email = process.env.EMAIL ?? '';
 export const password = process.env.PASSWORD ?? '';
 export const twoCaptchaApiKey = process.env.TWO_CAPTCHA_API_KEY ?? '';
