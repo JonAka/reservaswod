@@ -28,12 +28,19 @@ import {
 
 const RETRY_INTERVAL_MS = 30_000;
 
-const DRY_RUN =
-  process.env.DRY_RUN !== 'false';
+const DRY_RUN = process.env.DRY_RUN !== 'false';
 
 const MONITOR_ENABLED =
   process.env.MONITOR_OPENING === 'true' &&
   !DRY_RUN;
+
+const WAIT_FOR_OPENING =
+  process.env.WAIT_FOR_OPENING === 'true';
+
+const BOOKING_TIME =
+  process.env.BOOKING_TIME || '13:30';
+
+const TIME_ZONE = 'Europe/Madrid';
 
 const sleep = (ms: number) =>
   new Promise<void>(resolve =>
@@ -53,13 +60,9 @@ function validateConfig(): void {
   }
 
   if (
-    !Object.values(
-      reservationsPreferences
-    ).some(Boolean)
+    !Object.values(reservationsPreferences).some(Boolean)
   ) {
-    throw new Error(
-      'No reservation days configured'
-    );
+    throw new Error('No reservation days configured');
   }
 }
 
@@ -67,7 +70,7 @@ function getMadridSecondsOfDay(): number {
   const parts = new Intl.DateTimeFormat(
     'en-US',
     {
-      timeZone: 'Europe/Madrid',
+      timeZone: TIME_ZONE,
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
@@ -88,11 +91,70 @@ function getMadridSecondsOfDay(): number {
   );
 }
 
+function getBookingTimeSeconds(): number {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(
+    BOOKING_TIME
+  );
+
+  if (!match) {
+    throw new Error(
+      `Invalid BOOKING_TIME: ${BOOKING_TIME}`
+    );
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+
+  if (
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    throw new Error(
+      `Invalid BOOKING_TIME: ${BOOKING_TIME}`
+    );
+  }
+
+  return hour * 3600 + minute * 60;
+}
+
+async function waitForBookingOpening(): Promise<void> {
+  if (!WAIT_FOR_OPENING) {
+    console.log(
+      'ℹ️ Opening wait disabled. Running immediately.'
+    );
+    return;
+  }
+
+  const targetSeconds = getBookingTimeSeconds();
+
+  console.log(
+    `⏰ Waiting for ${BOOKING_TIME} (${TIME_ZONE})`
+  );
+
+  while (true) {
+    const remaining =
+      targetSeconds - getMadridSecondsOfDay();
+
+    if (remaining <= 0) {
+      break;
+    }
+
+    await sleep(
+      Math.min(remaining * 1000, 1000)
+    );
+  }
+
+  console.log(
+    '🚀 Booking window reached. Starting reservations.'
+  );
+}
+
 function monitoringDeadline(): number {
   const seconds = getMadridSecondsOfDay();
 
-  const deadlineSeconds =
-    14 * 3600;
+  const deadlineSeconds = 14 * 3600;
 
   return (
     Date.now() +
@@ -115,18 +177,20 @@ async function main(): Promise<void> {
     `📅 Target dates: ${upcomingDates.join(', ')}`
   );
 
-  console.log(
-    `🧪 Dry run: ${DRY_RUN}`
-  );
+  console.log(`🧪 Dry run: ${DRY_RUN}`);
 
   console.log(
     `🔁 Monitoring enabled: ${MONITOR_ENABLED}`
   );
 
-  // El archivo de estado es una ayuda, no
-  // una prueba definitiva de que la clase
-  // correcta siga reservada. Por eso no
-  // salimos aquí sin consultar WodBuster.
+  console.log(
+    `⏰ Wait for opening: ${WAIT_FOR_OPENING}`
+  );
+
+  console.log(
+    `🕐 Booking time: ${BOOKING_TIME} (${TIME_ZONE})`
+  );
+
   if (
     !DRY_RUN &&
     allDatesCovered(state, upcomingDates)
@@ -145,10 +209,6 @@ async function main(): Promise<void> {
       '--disable-setuid-sandbox',
     ],
   });
-
-  const deadline = MONITOR_ENABLED
-    ? monitoringDeadline()
-    : Date.now();
 
   try {
     const page = await browser.newPage();
@@ -176,11 +236,22 @@ async function main(): Promise<void> {
       await page.goto(loginUrl);
     }
 
-    await login(
-      page,
-      email,
-      password
+    await login(page, email, password);
+
+    console.log(
+      '✅ Login completed. Session prepared.'
     );
+
+    // Esperamos después de iniciar sesión,
+    // pero antes de consultar las reservas.
+    await waitForBookingOpening();
+
+    // Calculamos el límite después de esperar.
+    // De este modo, los reintentos siguen
+    // disponibles hasta las 14:00.
+    const deadline = MONITOR_ENABLED
+      ? monitoringDeadline()
+      : Date.now();
 
     let attempt = 0;
 
@@ -201,8 +272,6 @@ async function main(): Promise<void> {
           );
 
         if (!DRY_RUN) {
-          // Actualizamos el estado únicamente
-          // con reservas confirmadas.
           state = updateState(
             state,
             dayResults.map(
@@ -215,9 +284,6 @@ async function main(): Promise<void> {
 
           saveState(state);
 
-          // Comprobamos los resultados de esta
-          // consulta, no solamente el archivo
-          // de estado de ejecuciones anteriores.
           const confirmedDates = new Set(
             dayResults
               .filter(
@@ -240,15 +306,13 @@ async function main(): Promise<void> {
           const allConfirmed =
             upcomingDates.length > 0 &&
             upcomingDates.every(
-              date =>
-                confirmedDates.has(date)
+              date => confirmedDates.has(date)
             );
 
           if (allConfirmed) {
             console.log(
               '🎉 All requested reservations confirmed'
             );
-
             break;
           }
         }
@@ -260,33 +324,24 @@ async function main(): Promise<void> {
             : error
         );
 
-        // En modo manual o de prueba,
-        // propagamos el fallo para que
-        // GitHub Actions lo marque.
         if (!MONITOR_ENABLED) {
           throw error;
         }
-
-        // En modo monitorización, seguimos
-        // hasta la hora límite.
       }
 
       if (!MONITOR_ENABLED) {
         console.log(
           'ℹ️ Single-check mode. Finished.'
         );
-
         break;
       }
 
-      const remaining =
-        deadline - Date.now();
+      const remaining = deadline - Date.now();
 
       if (remaining <= 0) {
         console.log(
           '⏰ Monitoring window ended at 14:00 Madrid time.'
         );
-
         break;
       }
 
@@ -296,10 +351,8 @@ async function main(): Promise<void> {
       );
 
       console.log(
-        `⏳ Pending reservations. ` +
-        `Retrying in ${Math.ceil(
-          wait / 1000
-        )}s`
+        `⏳ Pending reservations. Retrying in ` +
+        `${Math.ceil(wait / 1000)}s`
       );
 
       await sleep(wait);
@@ -316,9 +369,7 @@ async function main(): Promise<void> {
   } finally {
     await browser.close();
 
-    console.log(
-      'Script finished'
-    );
+    console.log('Script finished');
   }
 }
 
