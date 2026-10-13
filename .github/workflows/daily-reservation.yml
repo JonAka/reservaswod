@@ -3,10 +3,8 @@ run-name: "🏋️ AutoWOD – ${{ github.event_name == 'workflow_dispatch' && '
 
 on:
   schedule:
-    # Sunday UTC: early starts to compensate for GitHub scheduling delays.
-    # The booking gate waits until BOOKING_TIME in Europe/Madrid.
-    - cron: '0 9 * * 0'
-    - cron: '0 10 * * 0'
+  - cron: '17 9 * * 0'
+  - cron: '23 10 * * 0'
 
   # Run it manually from the Actions tab whenever you need to.
   # Useful when your gym opens the whole week at once — trigger once and
