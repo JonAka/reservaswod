@@ -171,9 +171,8 @@ jobs:
           restore-keys: |
             booking-state-${{ runner.os }}-
 
-      # Deliberately last: everything above is warm by now, so the booking
-      # request goes out within a second of the target time.
-      - name: ⏳ Wait for the booking window
+      # Start the script five minutes before opening so it can log in first.
+      - name: ⏳ Wait until five minutes before opening
         if: ${{ steps.schedule-gate.outputs.should_run == 'true' && steps.schedule-gate.outputs.wait_until != '' }}
         env:
           WAIT_UNTIL: ${{ steps.schedule-gate.outputs.wait_until }}
@@ -181,14 +180,14 @@ jobs:
           TZ_NAME: Europe/Madrid
         run: |
           set -euo pipefail
-          remaining=$(( WAIT_UNTIL - $(date +%s) ))
+          remaining=$(( WAIT_UNTIL - 300 - $(date +%s) ))
           if [ "$remaining" -le 0 ]; then
             echo "Booking window already open — continuing."
             exit 0
           fi
-          echo "Sleeping ${remaining}s until $BOOKING_TIME ($TZ_NAME)..."
+          echo "Sleeping ${remaining}s until 5 minutes before $BOOKING_TIME ($TZ_NAME)..."
           sleep "$remaining"
-          echo "It is now $(TZ="$TZ_NAME" date '+%F %T %Z') — booking."
+          echo "It is now $(TZ="$TZ_NAME" date '+%F %T %Z') — preparing login."
 
       - name: 🎯 Run booking script
         if: steps.schedule-gate.outputs.should_run == 'true'
@@ -209,6 +208,8 @@ jobs:
           AVAILABLE_DAYS: ${{ inputs.available_days || vars.AVAILABLE_DAYS }}
           DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
           MONITOR_OPENING: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+          WAIT_FOR_OPENING: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+          BOOKING_TIME: ${{ vars.BOOKING_TIME || '13:30' }}
         run: pnpm start
 
       - name: 💾 Save booking state
