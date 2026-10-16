@@ -88,7 +88,7 @@ jobs:
           SUNDAY: '11:30|WOD'
           AVAILABLE_DAYS: '3'
           DRY_RUN: 'false'
-          MONITOR_OPENING: 'false'
+          MONITOR_OPENING: 'true'
           WAIT_FOR_OPENING: 'true'
           BOOKING_TIME: '20:30'
         run: pnpm start
