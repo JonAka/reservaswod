@@ -16,7 +16,7 @@ jobs:
   book-special-wod:
     name: Reservar WOD del fin de semana
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 480
     steps:
       - name: 📅 Comprobar fecha de la reserva especial
         id: date-check
