@@ -89,6 +89,8 @@ jobs:
           AVAILABLE_DAYS: '3'
           DRY_RUN: 'false'
           MONITOR_OPENING: 'true'
+          MONITOR_END_TIME: '21:00'
+          RETRY_INTERVAL_MS: '5000'
           WAIT_FOR_OPENING: 'true'
           BOOKING_TIME: '20:30'
         run: pnpm start
