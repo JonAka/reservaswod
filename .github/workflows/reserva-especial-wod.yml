@@ -1,0 +1,94 @@
+name: Reserva especial WOD 17-18 octubre
+run-name: "🏋️ WOD sábado 10:15 y domingo 11:30"
+
+on:
+  schedule:
+    # Viernes 16/10/2026 a las 20:17 en España peninsular (18:17 UTC).
+    # GitHub puede iniciar las ejecuciones programadas con retraso.
+    - cron: '17 18 * * 5'
+  workflow_dispatch:
+
+concurrency:
+  group: reserva-especial-wod-2026-10-16
+  cancel-in-progress: false
+
+jobs:
+  book-special-wod:
+    name: Reservar WOD del fin de semana
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: 📅 Comprobar fecha de la reserva especial
+        id: date-check
+        env:
+          TZ: Europe/Madrid
+        shell: bash
+        run: |
+          set -euo pipefail
+          today="$(date +%F)"
+          if [[ "$today" != "2026-10-16" ]]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Esta reserva especial solo corresponde al viernes 16/10/2026. Hoy: $today. No se ejecutará." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Reserva especial activada para sábado 17/10 10:15 y domingo 18/10 11:30." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 📥 Descargar código
+        if: steps.date-check.outputs.should_run == 'true'
+        uses: actions/checkout@v6
+
+      - name: 📦 Instalar pnpm
+        if: steps.date-check.outputs.should_run == 'true'
+        uses: pnpm/action-setup@v6
+
+      - name: 🔧 Preparar Node.js
+        if: steps.date-check.outputs.should_run == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: 📚 Instalar dependencias
+        if: steps.date-check.outputs.should_run == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: 🌐 Instalar Chrome para Puppeteer
+        if: steps.date-check.outputs.should_run == 'true'
+        run: pnpm exec puppeteer browsers install chrome
+
+      - name: ⏳ Esperar hasta las 20:25 para iniciar sesión
+        if: steps.date-check.outputs.should_run == 'true'
+        env:
+          TZ: Europe/Madrid
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$(date -d '2026-10-16 20:25:00' +%s)"
+          now="$(date +%s)"
+          remaining=$(( target - now ))
+          if (( remaining > 0 )); then
+            echo "Esperando ${remaining}s hasta las 20:25:00 (Europe/Madrid)."
+            sleep "$remaining"
+          else
+            echo "Son las $(date '+%H:%M:%S %Z'): la hora prevista ya ha pasado; se intentará reservar ahora."
+          fi
+
+      - name: 🎯 Reservar WOD sábado y domingo
+        if: steps.date-check.outputs.should_run == 'true'
+        env:
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          TWO_CAPTCHA_API_KEY: ${{ secrets.TWO_CAPTCHA_API_KEY }}
+          MONDAY: ''
+          TUESDAY: ''
+          WEDNESDAY: ''
+          THURSDAY: ''
+          FRIDAY: ''
+          SATURDAY: '10:15|WOD'
+          SUNDAY: '11:30|WOD'
+          AVAILABLE_DAYS: '3'
+          DRY_RUN: 'false'
+          MONITOR_OPENING: 'false'
+          WAIT_FOR_OPENING: 'true'
+          BOOKING_TIME: '20:30'
+        run: pnpm start
