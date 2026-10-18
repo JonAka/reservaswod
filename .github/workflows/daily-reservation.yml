@@ -207,8 +207,8 @@ jobs:
           SUNDAY: ${{ vars.SUNDAY }}
           AVAILABLE_DAYS: ${{ inputs.available_days || vars.AVAILABLE_DAYS }}
           DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
-          MONITOR_OPENING: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
-          WAIT_FOR_OPENING: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+          MONITOR_OPENING: 'true'
+          WAIT_FOR_OPENING: 'true'
           BOOKING_TIME: ${{ vars.BOOKING_TIME || '13:30' }}
         run: pnpm start
 
