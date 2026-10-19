@@ -3,8 +3,9 @@ run-name: "🏋️ AutoWOD – ${{ github.event_name == 'workflow_dispatch' && '
 
 on:
   schedule:
-  - cron: '17 9 * * 0'
-  - cron: '23 10 * * 0'
+  # Sunday 08:00 UTC = 10:00 summer / 09:00 winter in Madrid.
+  # The job waits until 13:25 Madrid before logging in.
+  - cron: '0 8 * * 0'
 
   # Run it manually from the Actions tab whenever you need to.
   # Useful when your gym opens the whole week at once — trigger once and
@@ -16,9 +17,8 @@ on:
         required: false
         default: ''
 
-# Scheduled runs share one queue so the two crons can't both wake up and book
-# the same sessions at BOOKING_TIME. Manual runs get their own group so they
-# never sit behind a scheduled run that is still waiting for its window.
+# Keep scheduled runs in one group. Manual runs use their own group
+# so they can be used as a fallback without cancelling a scheduled run.
 concurrency:
   group: reservation-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'scheduled' }}
   cancel-in-progress: false
@@ -28,7 +28,7 @@ jobs:
     name: Book Workout Session
     runs-on: ubuntu-latest
     # Long enough to cover the wait for BOOKING_TIME plus the booking itself.
-    timeout-minutes: 420
+    timeout-minutes: 330
 
     steps:
       - name: 📥 Get latest code
@@ -45,11 +45,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Never wait longer than this. It sits well above the largest margin
-          # a cron above can ask for (6h) and well below a full day, so the only
-          # thing that trips it is GitHub starting us so late that the clock
-          # rolled past midnight in Madrid — the window is behind us by then,
-          # so go now instead of idling until tomorrow night.
+          # Maximum allowed wait: avoids accidentally sleeping until the next day.
           MAX_WAIT_SECONDS=$(( 12 * 3600 ))
 
           # How late a run may start before the summary flags it as a problem.
@@ -57,12 +53,12 @@ jobs:
 
           frequency="$(echo "${BOOKING_FREQUENCY:-daily}" | tr '[:upper:]' '[:lower:]' | xargs)"
           target_day="$(echo "${BOOKING_WEEKDAY:-sunday}" | tr '[:upper:]' '[:lower:]' | xargs)"
-          booking_time="$(echo "${BOOKING_TIME:-22:30}" | xargs)"
+          booking_time="$(echo "${BOOKING_TIME:-13:30}" | xargs)"
 
           if ! printf '%s' "$booking_time" | grep -qE '^([01]?[0-9]|2[0-3]):[0-5][0-9]$'; then
-            echo "Unknown BOOKING_TIME '$BOOKING_TIME'; defaulting to 22:30."
-            echo "Unknown BOOKING_TIME '$BOOKING_TIME'; defaulted to 22:30 for this run." >> "$GITHUB_STEP_SUMMARY"
-            booking_time="22:30"
+            echo "Unknown BOOKING_TIME '$BOOKING_TIME'; defaulting to 13:30."
+            echo "Unknown BOOKING_TIME '$BOOKING_TIME'; defaulted to 13:30 for this run." >> "$GITHUB_STEP_SUMMARY"
+            booking_time="13:30"
           fi
 
           case "$target_day" in
@@ -80,17 +76,12 @@ jobs:
           wait_seconds=$(( target_epoch - $(date +%s) ))
 
           wait_until=""
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            late_note="Manual run — booking immediately instead of waiting for $booking_time."
-          elif [ "$wait_seconds" -gt "$MAX_WAIT_SECONDS" ]; then
-            late_note="⚠️ GitHub started this run so late that $booking_time (Europe/Madrid) has already passed — booking right now."
+          if [ "$wait_seconds" -gt "$MAX_WAIT_SECONDS" ]; then
+            late_note="⚠️ Booking time is more than 12 hours away; not waiting."
           elif [ "$wait_seconds" -gt 0 ]; then
             wait_until="$target_epoch"
             late_note="Will book at $booking_time (Europe/Madrid), in $(( wait_seconds / 60 )) min."
           elif [ "$wait_seconds" -ge "-$LATE_GRACE_SECONDS" ]; then
-            # The backup cron's run waits its turn in the concurrency queue and
-            # starts moments after the first one books. That is the design
-            # working, not a delay — don't cry wolf about it every night.
             late_note="Booking window already open (started $(( -wait_seconds / 60 )) min after $booking_time, Europe/Madrid) — booking right now."
           else
             late_note="⚠️ GitHub started this run $(( -wait_seconds / 60 )) min after $booking_time (Europe/Madrid) — booking right now. If this keeps happening, move the cron times in this workflow earlier."
@@ -103,118 +94,3 @@ jobs:
           else
             today="$(TZ="$TZ_NAME" date +%A | tr '[:upper:]' '[:lower:]')"
           fi
-
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "Manual run requested — booking script will run." >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$frequency" = "weekly" ] && [ "$today" != "$target_day" ]; then
-            wait_until=""
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "Weekly mode is enabled for $target_day. Today is $today in Europe/Madrid, so AutoWOD skipped this scheduled run." >> "$GITHUB_STEP_SUMMARY"
-          else
-            if [ "$frequency" != "daily" ] && [ "$frequency" != "weekly" ]; then
-              echo "Unknown BOOKING_FREQUENCY '$BOOKING_FREQUENCY'; defaulting to daily."
-              echo "Unknown BOOKING_FREQUENCY '$BOOKING_FREQUENCY'; defaulted to daily for this run." >> "$GITHUB_STEP_SUMMARY"
-            fi
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "AutoWOD will run today ($today, Europe/Madrid)." >> "$GITHUB_STEP_SUMMARY"
-            echo "$late_note" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          echo "wait_until=$wait_until" >> "$GITHUB_OUTPUT"
-          echo "booking_time=$booking_time" >> "$GITHUB_OUTPUT"
-          echo "$late_note"
-
-      - name: 📦 Install pnpm
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        uses: pnpm/action-setup@v6
-
-      - name: 🔧 Set up Node.js
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - name: 💾 Cache pnpm store
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: 📚 Install dependencies
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        run: pnpm install --frozen-lockfile
-
-      - name: 💾 Cache Puppeteer browser
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/puppeteer
-          key: puppeteer-cache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            puppeteer-cache-${{ runner.os }}-
-
-      - name: 🌐 Install Chrome for Puppeteer
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        run: pnpm exec puppeteer browsers install chrome
-
-      - name: 📋 Restore booking state
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        id: booking-state-restore
-        uses: actions/cache/restore@v5
-        with:
-          path: booking-state.json
-          key: booking-state-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            booking-state-${{ runner.os }}-
-
-      # Start the script five minutes before opening so it can log in first.
-      - name: ⏳ Wait until five minutes before opening
-        if: ${{ steps.schedule-gate.outputs.should_run == 'true' && steps.schedule-gate.outputs.wait_until != '' }}
-        env:
-          WAIT_UNTIL: ${{ steps.schedule-gate.outputs.wait_until }}
-          BOOKING_TIME: ${{ steps.schedule-gate.outputs.booking_time }}
-          TZ_NAME: Europe/Madrid
-        run: |
-          set -euo pipefail
-          remaining=$(( WAIT_UNTIL - 300 - $(date +%s) ))
-          if [ "$remaining" -le 0 ]; then
-            echo "Booking window already open — continuing."
-            exit 0
-          fi
-          echo "Sleeping ${remaining}s until 5 minutes before $BOOKING_TIME ($TZ_NAME)..."
-          sleep "$remaining"
-          echo "It is now $(TZ="$TZ_NAME" date '+%F %T %Z') — preparing login."
-
-      - name: 🎯 Run booking script
-        if: steps.schedule-gate.outputs.should_run == 'true'
-        env:
-          # Secrets (sensitive — set in Settings → Secrets and variables → Actions → Secrets tab)
-          EMAIL: ${{ secrets.EMAIL }}
-          PASSWORD: ${{ secrets.PASSWORD }}
-          TWO_CAPTCHA_API_KEY: ${{ secrets.TWO_CAPTCHA_API_KEY }}
-
-          # Variables (set in Settings → Secrets and variables → Actions → Variables tab)
-          MONDAY: ${{ vars.MONDAY }}
-          TUESDAY: ${{ vars.TUESDAY }}
-          WEDNESDAY: ${{ vars.WEDNESDAY }}
-          THURSDAY: ${{ vars.THURSDAY }}
-          FRIDAY: ${{ vars.FRIDAY }}
-          SATURDAY: ${{ vars.SATURDAY }}
-          SUNDAY: ${{ vars.SUNDAY }}
-          AVAILABLE_DAYS: ${{ inputs.available_days || vars.AVAILABLE_DAYS }}
-          DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
-          MONITOR_OPENING: 'true'
-          WAIT_FOR_OPENING: 'true'
-          BOOKING_TIME: ${{ vars.BOOKING_TIME || '13:30' }}
-        run: pnpm start
-
-      - name: 💾 Save booking state
-        if: ${{ always() && steps.schedule-gate.outputs.should_run == 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: booking-state.json
-          key: booking-state-${{ runner.os }}-${{ github.run_id }}
