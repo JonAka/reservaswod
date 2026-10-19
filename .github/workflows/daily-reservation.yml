@@ -94,3 +94,119 @@ jobs:
           else
             today="$(TZ="$TZ_NAME" date +%A | tr '[:upper:]' '[:lower:]')"
           fi
+
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] && [ "$frequency" = "weekly" ] && [ "$today" != "$target_day" ]; then
+            wait_until=""
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Weekly mode is enabled for $target_day. Today is $today in Europe/Madrid, so AutoWOD skipped this scheduled run." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$EVENT_NAME" != "workflow_dispatch" ] && [ "$wait_seconds" -lt "-$LATE_GRACE_SECONDS" ]; then
+            wait_until=""
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ GitHub started more than 15 minutes after $booking_time (Europe/Madrid); skipping late scheduled run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            if [ "$frequency" != "daily" ] && [ "$frequency" != "weekly" ]; then
+              echo "Unknown BOOKING_FREQUENCY '$BOOKING_FREQUENCY'; defaulting to daily."
+              echo "Unknown BOOKING_FREQUENCY '$BOOKING_FREQUENCY'; defaulted to daily for this run." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "AutoWOD will run today ($today, Europe/Madrid)." >> "$GITHUB_STEP_SUMMARY"
+            echo "$late_note" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "wait_until=$wait_until" >> "$GITHUB_OUTPUT"
+          echo "booking_time=$booking_time" >> "$GITHUB_OUTPUT"
+          echo "$late_note"
+
+      - name: 📦 Install pnpm
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        uses: pnpm/action-setup@v6
+
+      - name: 🔧 Set up Node.js
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: 💾 Cache pnpm store
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: 📚 Install dependencies
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: 💾 Cache Puppeteer browser
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/puppeteer
+          key: puppeteer-cache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            puppeteer-cache-${{ runner.os }}-
+
+      - name: 🌐 Install Chrome for Puppeteer
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        run: pnpm exec puppeteer browsers install chrome
+
+      - name: 📋 Restore booking state
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        id: booking-state-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: booking-state.json
+          key: booking-state-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            booking-state-${{ runner.os }}-
+
+      # Start the script five minutes before opening so it can log in first.
+      - name: ⏳ Wait until five minutes before opening
+        if: ${{ steps.schedule-gate.outputs.should_run == 'true' && steps.schedule-gate.outputs.wait_until != '' }}
+        env:
+          WAIT_UNTIL: ${{ steps.schedule-gate.outputs.wait_until }}
+          BOOKING_TIME: ${{ steps.schedule-gate.outputs.booking_time }}
+          TZ_NAME: Europe/Madrid
+        run: |
+          set -euo pipefail
+          remaining=$(( WAIT_UNTIL - 300 - $(date +%s) ))
+          if [ "$remaining" -le 0 ]; then
+            echo "Booking window already open — continuing."
+            exit 0
+          fi
+          echo "Sleeping ${remaining}s until 5 minutes before $BOOKING_TIME ($TZ_NAME)..."
+          sleep "$remaining"
+          echo "It is now $(TZ="$TZ_NAME" date '+%F %T %Z') — preparing login."
+
+      - name: 🎯 Run booking script
+        if: steps.schedule-gate.outputs.should_run == 'true'
+        env:
+          # Secrets (sensitive — set in Settings → Secrets and variables → Actions → Secrets tab)
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          TWO_CAPTCHA_API_KEY: ${{ secrets.TWO_CAPTCHA_API_KEY }}
+
+          # Variables (set in Settings → Secrets and variables → Actions → Variables tab)
+          MONDAY: ${{ vars.MONDAY }}
+          TUESDAY: ${{ vars.TUESDAY }}
+          WEDNESDAY: ${{ vars.WEDNESDAY }}
+          THURSDAY: ${{ vars.THURSDAY }}
+          FRIDAY: ${{ vars.FRIDAY }}
+          SATURDAY: ${{ vars.SATURDAY }}
+          SUNDAY: ${{ vars.SUNDAY }}
+          AVAILABLE_DAYS: ${{ inputs.available_days || vars.AVAILABLE_DAYS }}
+          DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+          MONITOR_OPENING: 'true'
+          WAIT_FOR_OPENING: 'true'
+          BOOKING_TIME: ${{ vars.BOOKING_TIME || '13:30' }}
+        run: pnpm start
+
+      - name: 💾 Save booking state
+        if: ${{ always() && steps.schedule-gate.outputs.should_run == 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: booking-state.json
+          key: booking-state-${{ runner.os }}-${{ github.run_id }}
